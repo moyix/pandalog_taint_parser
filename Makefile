@@ -2,17 +2,22 @@ CXXFLAGS=-pthread -std=c++11 -O3 -ggdb
 LDFLAGS=-L/usr/local/lib
 LIBS=-lz -lprotobuf -lpthread
 
-all: get_ulps
+all: label_tcn label_pcs
 
 plog.pb.cc plog.pb.h: plog.proto
 	protoc --cpp_out=. $<
 
 plog.pb.o: plog.pb.cc plog.pb.h
 
-get_ulps.o: plog.pb.h get_ulps.cpp
+label_tcn.o: plog.pb.h label_tcn.cpp
 
-get_ulps: get_ulps.o plog.pb.o
+label_pcs.o: plog.pb.h label_pcs.cpp
+
+label_tcn: label_tcn.o plog.pb.o
+	$(CXX) $(LDFLAGS) $^ -o $@ $(LIBS)
+
+label_pcs: label_pcs.o plog.pb.o
 	$(CXX) $(LDFLAGS) $^ -o $@ $(LIBS)
 
 clean:
-	rm -f *.o plog.pb.cc plog.pb.h
+	rm -f *.o plog.pb.cc plog.pb.h label_pcs label_tcn

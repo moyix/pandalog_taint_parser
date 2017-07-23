@@ -11,6 +11,7 @@
 #include <iostream>
 #include <atomic>
 #include <map>
+#include <set>
 #include <vector>
     
 #include "plog.pb.h"
@@ -62,13 +63,12 @@ PlChunk *chunks = NULL;
 PlHeader *hdr = NULL;
 PlDir *dir = NULL;
 
-std::map<uint64_t,uint32_t> ptr_to_tcn;
+std::map<uint64_t,std::set<uint64_t>> ptr_to_pc;
 pthread_mutex_t tcn_insert_lock = PTHREAD_MUTEX_INITIALIZER;
 std::map<uint64_t,std::vector<int>> ptr_to_label;
 pthread_mutex_t maplock = PTHREAD_MUTEX_INITIALIZER;
 
 std::atomic<int> processed(0);
-uint32_t max_tcn;
 int total_chunks = 0;
 
 template<typename T>
@@ -86,15 +86,13 @@ unsigned long decompress_chunk(uint8_t **outbuf, uint8_t *chunk, unsigned long *
         if (ret == Z_BUF_ERROR) {
             *chunk_size *= 2;
             *outbuf = (uint8_t *) realloc(*outbuf, *chunk_size);
-            //printf("Couldn't decompress chunk! Trying with %u.\n", *chunk_size);
             uncompressed_size = *chunk_size;
         }
         else if (ret == Z_OK) {
-            //printf("Successfully decompressed the first chunk.\n");
             break;
         }
         else {
-            //printf("Some other error, %d\n", ret);
+            printf("Some other zlib error, %d\n", ret);
             exit(1);
         }
     }
@@ -111,17 +109,6 @@ void *process_chunks(void *args) {
         unsigned long uncompressed_size = 
             decompress_chunk(&outbuf, plog+chunk->start, &chunk_size);
         int j = 0;
-#if 0
-        if (i > 0) {
-            printf("Start of decompressed data:\n");
-            for (int x = 0; x < 128; x += 16) {
-                for (int y = x; y < x+16; y++) {
-                    printf(" %02x", outbuf[y]);
-                }
-                printf("\n");
-            }
-        }
-#endif
         while (j < uncompressed_size) {
             panda::LogEntry le;
             uint32_t entry_size = *(uint32_t *)(outbuf+j);
@@ -144,8 +131,7 @@ void *process_chunks(void *args) {
                     }
                     // Can we get rid of this lock in favor of an atomic?
                     pthread_mutex_lock(&tcn_insert_lock);
-                    ptr_to_tcn[tq.ptr()] = std::max(ptr_to_tcn[tq.ptr()], tq.tcn());
-                    max_tcn = std::max(max_tcn, tq.tcn());
+                    ptr_to_pc[tq.ptr()].insert(le.pc());
                     pthread_mutex_unlock(&tcn_insert_lock);
 
                 }
@@ -154,14 +140,13 @@ void *process_chunks(void *args) {
         }
         processed++;
     }
-    printf("Thread for %u done.\n", a->start);
     return NULL;
 }
 
 void *progress_func(void *arg) {
     while (processed != total_chunks) {
         int p = processed.load();
-        printf("\r%4d / %4d chunks processed (%3.2f%%), max_tcn=%u.", p, total_chunks, 100*((float)p/total_chunks), max_tcn);
+        printf("\r%4d / %4d chunks processed (%3.2f%%).", p, total_chunks, 100*((float)p/total_chunks));
         fflush(stdout);
         usleep(500000);
     }
@@ -209,17 +194,21 @@ int main(int argc, char **argv) {
     }
     pthread_join(progress_thread, NULL);
 
-    printf("Final pass to compute max TCN...\n");
-    std::map<int,uint32_t> label_to_tcn;
+    printf("Final pass to gather PCs...\n");
+    std::map<int,std::set<uint64_t>> label_to_pc;
     for (auto kvp : ptr_to_label) {
         for (auto l : kvp.second) {
-            label_to_tcn[l] = std::max(label_to_tcn[l], ptr_to_tcn[kvp.first]);
+            label_to_pc[l].insert(ptr_to_pc[kvp.first].begin(), ptr_to_pc[kvp.first].end());
         }
     }
 
-    FILE *f = fopen("label_tcn.txt", "w");
-    for (auto kvp : label_to_tcn)
-        fprintf(f, "%d %u\n", kvp.first, kvp.second);
+    FILE *f = fopen("label_pcs.txt", "w");
+    for (auto kvp : label_to_pc) {
+        fprintf(f, "%d", kvp.first);
+        for (auto pc : kvp.second)
+            fprintf(f, " %#x", pc);
+        fprintf(f, "\n");
+    }
     fclose(f);
 
     return 0;
