@@ -63,13 +63,16 @@ PlChunk *chunks = NULL;
 PlHeader *hdr = NULL;
 PlDir *dir = NULL;
 
-std::map<uint64_t,std::set<uint64_t>> ptr_to_pc;
 pthread_mutex_t tcn_insert_lock = PTHREAD_MUTEX_INITIALIZER;
+std::vector<std::set<uint64_t>> bucket_to_ptr;
 std::map<uint64_t,std::vector<int>> ptr_to_label;
 pthread_mutex_t maplock = PTHREAD_MUTEX_INITIALIZER;
 
 std::atomic<int> processed(0);
 int total_chunks = 0;
+
+int buckets = 0;
+uint64_t num_instr = 0;
 
 template<typename T>
 void update_maximum(std::atomic<T>& maximum_value, T const& value) noexcept
@@ -131,7 +134,10 @@ void *process_chunks(void *args) {
                     }
                     // Can we get rid of this lock in favor of an atomic?
                     pthread_mutex_lock(&tcn_insert_lock);
-                    ptr_to_pc[tq.ptr()].insert(le.pc());
+                    int index = (le.instr()/((double)num_instr))*buckets;
+                    assert(le.instr() < num_instr);
+                    assert(index < buckets);
+                    bucket_to_ptr[index].insert(tq.ptr());
                     pthread_mutex_unlock(&tcn_insert_lock);
 
                 }
@@ -155,6 +161,13 @@ void *progress_func(void *arg) {
 }
 
 int main(int argc, char **argv) {
+    if (argc < 4) {
+        fprintf(stderr, "usage: %s <log> <instr> <buckets>\n", argv[0]);
+        return 1;
+    }
+    num_instr = strtoull(argv[2], NULL, 0);
+    buckets = atoi(argv[3]);
+    bucket_to_ptr.resize(buckets);
     int fd = open(argv[1], O_RDONLY);
     struct stat st;
     stat(argv[1], &st);
@@ -194,19 +207,13 @@ int main(int argc, char **argv) {
     }
     pthread_join(progress_thread, NULL);
 
-    printf("Final pass to gather PCs...\n");
-    std::map<int,std::set<uint64_t>> label_to_pc;
-    for (auto kvp : ptr_to_label) {
-        for (auto l : kvp.second) {
-            label_to_pc[l].insert(ptr_to_pc[kvp.first].begin(), ptr_to_pc[kvp.first].end());
-        }
-    }
-
-    FILE *f = fopen("label_pcs.txt", "w");
-    for (auto kvp : label_to_pc) {
-        fprintf(f, "%d", kvp.first);
-        for (auto pc : kvp.second)
-            fprintf(f, " %#lx", pc);
+    FILE *f = fopen("label_instr.txt", "w");
+    printf("Final pass to compute number of labels...\n");
+    for (size_t i = 0; i < bucket_to_ptr.size(); i++) {
+        std::set<int> full_set;
+        for (auto ls : bucket_to_ptr[i]) full_set.insert(ptr_to_label[ls].begin(), ptr_to_label[ls].end());
+        fprintf(f, "%zu", i*(num_instr/buckets));
+        for (auto l : full_set) fprintf(f, " %d", l);
         fprintf(f, "\n");
     }
     fclose(f);
