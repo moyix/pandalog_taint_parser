@@ -73,6 +73,7 @@ int total_chunks = 0;
 
 int buckets = 0;
 uint64_t num_instr = 0;
+uint64_t first_instr = 0;
 
 template<typename T>
 void update_maximum(std::atomic<T>& maximum_value, T const& value) noexcept
@@ -134,7 +135,7 @@ void *process_chunks(void *args) {
                     }
                     // Can we get rid of this lock in favor of an atomic?
                     pthread_mutex_lock(&tcn_insert_lock);
-                    int index = (le.instr()/((double)num_instr))*buckets;
+                    int index = ((le.instr()-first_instr)/((double)(num_instr-first_instr)))*buckets;
                     assert(le.instr() < num_instr);
                     assert(index < buckets);
                     bucket_to_ptr[index].insert(tq.ptr());
@@ -161,13 +162,16 @@ void *progress_func(void *arg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        fprintf(stderr, "usage: %s <log> <instr> <buckets>\n", argv[0]);
+    if (argc != 5) {
+        fprintf(stderr, "usage: %s <log> <num_instr> <first_instr> <buckets>\n", argv[0]);
         return 1;
     }
+
     num_instr = strtoull(argv[2], NULL, 0);
-    buckets = atoi(argv[3]);
+    first_instr = strtoull(argv[3], NULL, 0);
+    buckets = atoi(argv[4]);
     bucket_to_ptr.resize(buckets);
+
     int fd = open(argv[1], O_RDONLY);
     struct stat st;
     stat(argv[1], &st);
@@ -212,7 +216,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < bucket_to_ptr.size(); i++) {
         std::set<int> full_set;
         for (auto ls : bucket_to_ptr[i]) full_set.insert(ptr_to_label[ls].begin(), ptr_to_label[ls].end());
-        fprintf(f, "%zu", i*(num_instr/buckets));
+        fprintf(f, "%zu", i*((num_instr-first_instr)/buckets)+first_instr);
         for (auto l : full_set) fprintf(f, " %d", l);
         fprintf(f, "\n");
     }
